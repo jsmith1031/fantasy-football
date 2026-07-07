@@ -106,6 +106,10 @@
   .matchup-detail summary .team-name{flex:1;}
   .matchup-detail summary .team-name:last-of-type{text-align:right;}
   .matchup-detail table{border-top:1px solid var(--border);}
+  .taxi-footer{border-top:1px solid var(--border); padding:10px 14px 12px;}
+  .taxi-footer-label{font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-dim); margin-bottom:6px;}
+  .taxi-footer-label span{border-bottom:1px dotted var(--text-dim); cursor:help;}
+  .taxi-footer-cols{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
 
   /* ---- Bar chart ---- */
   .bar-row{display:grid; grid-template-columns:170px 1fr 70px; align-items:center; gap:10px; padding:9px 14px;}
@@ -516,6 +520,15 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
             </tr>`;
         }
 
+        const taxiFooter = (teamA?.taxiPlayers?.length || teamB?.taxiPlayers?.length) ? `
+          <div class="taxi-footer">
+            <div class="taxi-footer-label">Taxi squad <span title="Sleeper only exposes current taxi squad status, not a historical snapshot per week.">(current, not historical)</span></div>
+            <div class="taxi-footer-cols">
+              <div>${(teamA?.taxiPlayers||[]).map(p=>`<span class="taxi-chip">${p.name}${p.pos?` <em>${p.pos}</em>`:''}</span>`).join('') || '<span class="owner-name">— none —</span>'}</div>
+              <div style="text-align:right;">${(teamB?.taxiPlayers||[]).map(p=>`<span class="taxi-chip">${p.name}${p.pos?` <em>${p.pos}</em>`:''}</span>`).join('') || '<span class="owner-name">— none —</span>'}</div>
+            </div>
+          </div>` : '';
+
         return `
           <details class="panel matchup-detail">
             <summary>
@@ -526,6 +539,7 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
               <span class="team-name" style="${bWins?'color:var(--green);':''}">${teamB?.team_name||'—'}</span>
             </summary>
             <table><tbody>${playerRows}</tbody></table>
+            ${taxiFooter}
           </details>`;
       }).join('');
       return `
