@@ -106,6 +106,9 @@
   .matchup-detail summary .team-name{flex:1;}
   .matchup-detail summary .team-name:last-of-type{text-align:right;}
   .matchup-detail table{border-top:1px solid var(--border);}
+  .bench-row{opacity:0.65;}
+  .bench-row:hover{opacity:1;}
+  tr.section-divider td{padding:6px 14px; font-size:9.5px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-dim); background:var(--bg-panel-2); border-bottom:1px solid var(--border); font-weight:600;}
   .taxi-footer{border-top:1px solid var(--border); padding:10px 14px 12px;}
   .taxi-footer-label{font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-dim); margin-bottom:6px;}
   .taxi-footer-label span{border-bottom:1px dotted var(--text-dim); cursor:help;}
@@ -335,7 +338,8 @@ async function loadLeague(){
           points: entry.points,
           starters: entry.starters || [],
           starters_points: entry.starters_points || [],
-          players_points: entry.players_points || {}
+          players_points: entry.players_points || {},
+          players: entry.players || []
         });
       });
       Object.values(byMatchup).forEach(pair=>{
@@ -520,6 +524,29 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
             </tr>`;
         }
 
+        // Bench = rostered players that week minus the starters
+        const benchA = (a.players||[]).filter(pid => !a.starters.includes(pid))
+          .map(pid => ({ info: playerLabel(pid, playersMap), pts: a.players_points[pid] ?? null }))
+          .sort((x,y) => (y.pts??-1) - (x.pts??-1));
+        const benchB = (b.players||[]).filter(pid => !b.starters.includes(pid))
+          .map(pid => ({ info: playerLabel(pid, playersMap), pts: b.players_points[pid] ?? null }))
+          .sort((x,y) => (y.pts??-1) - (x.pts??-1));
+        const benchRowCount = Math.max(benchA.length, benchB.length);
+
+        let benchRows = '';
+        for(let i=0; i<benchRowCount; i++){
+          const rowA = benchA[i], rowB = benchB[i];
+          benchRows += `
+            <tr class="bench-row">
+              <td class="num mono">${rowA && rowA.pts!=null ? fmtPts(rowA.pts) : (rowA?'—':'')}</td>
+              <td>${rowA ? `${rowA.info.name}${rowA.info.pos?` <span class="owner-name">${rowA.info.pos}${rowA.info.nfl_team?'/'+rowA.info.nfl_team:''}</span>`:''}` : ''}</td>
+              <td class="num mono" style="color:var(--text-dim); width:40px; text-align:center;">BN</td>
+              <td>${rowB ? `${rowB.info.name}${rowB.info.pos?` <span class="owner-name">${rowB.info.pos}${rowB.info.nfl_team?'/'+rowB.info.nfl_team:''}</span>`:''}` : ''}</td>
+              <td class="num mono">${rowB && rowB.pts!=null ? fmtPts(rowB.pts) : (rowB?'—':'')}</td>
+            </tr>`;
+        }
+        const benchDivider = benchRowCount ? `<tr class="section-divider"><td colspan="5">Bench</td></tr>` : '';
+
         const taxiFooter = (teamA?.taxiPlayers?.length || teamB?.taxiPlayers?.length) ? `
           <div class="taxi-footer">
             <div class="taxi-footer-label">Taxi squad <span title="Sleeper only exposes current taxi squad status, not a historical snapshot per week.">(current, not historical)</span></div>
@@ -538,7 +565,7 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
               <span class="mono" style="${bWins?'color:var(--green);font-weight:700;':''}">${fmtPts(b.points)}</span>
               <span class="team-name" style="${bWins?'color:var(--green);':''}">${teamB?.team_name||'—'}</span>
             </summary>
-            <table><tbody>${playerRows}</tbody></table>
+            <table><tbody>${playerRows}${benchDivider}${benchRows}</tbody></table>
             ${taxiFooter}
           </details>`;
       }).join('');
