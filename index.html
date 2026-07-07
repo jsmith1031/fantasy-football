@@ -135,6 +135,7 @@
   </div>
   <div class="controls">
     <input id="leagueIdInput" class="mono" placeholder="League ID" value="1317218659407495168">
+    <input id="seasonInput" class="mono" placeholder="Season" value="2025" style="width:80px;">
     <button id="loadBtn" onclick="loadLeague()">Load League</button>
   </div>
 </div>
@@ -164,16 +165,37 @@ function avatarUrl(avatarId, fallback){
 
 function fmtPts(n){ return (Math.round(n*100)/100).toFixed(2); }
 
+// Sleeper rolls a league to a new league_id each season, linked backward via
+// previous_league_id. Given any league_id in the chain, walk backward until we
+// find the season the user actually wants.
+async function resolveLeagueForSeason(startLeagueId, targetSeason){
+  let currentId = startLeagueId;
+  for(let hop=0; hop<25; hop++){
+    const lg = await getJSON(`${API}/league/${currentId}`);
+    if(!targetSeason || lg.season === String(targetSeason)) return lg;
+    if(!lg.previous_league_id) return lg; // no older season available, return what we have
+    currentId = lg.previous_league_id;
+  }
+  return getJSON(`${API}/league/${currentId}`);
+}
+
 async function loadLeague(){
-  const leagueId = document.getElementById('leagueIdInput').value.trim();
+  const leagueIdRaw = document.getElementById('leagueIdInput').value.trim();
+  const targetSeason = document.getElementById('seasonInput').value.trim();
   const btn = document.getElementById('loadBtn');
-  if(!leagueId){ return; }
+  if(!leagueIdRaw){ return; }
   btn.disabled = true;
   document.getElementById('tickerWrap').style.display = 'none';
   contentEl.innerHTML = `<div class="msg"><span class="spinner"></span>&nbsp;&nbsp;Pulling league data from Sleeper…</div>`;
 
   try{
-    const league = await getJSON(`${API}/league/${leagueId}`);
+    const league = await resolveLeagueForSeason(leagueIdRaw, targetSeason);
+    const leagueId = league.league_id;
+    if(targetSeason && league.season !== String(targetSeason)){
+      contentEl.innerHTML = `<div class="msg error">Couldn't find a ${targetSeason} season for that league — the earliest linked season found was ${league.season}.</div>`;
+      btn.disabled = false;
+      return;
+    }
     const [users, rosters, nflState] = await Promise.all([
       getJSON(`${API}/league/${leagueId}/users`),
       getJSON(`${API}/league/${leagueId}/rosters`),
