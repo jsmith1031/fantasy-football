@@ -98,6 +98,15 @@
   .taxi-chip{display:inline-block; background:var(--bg-panel-2); border:1px solid var(--border); border-radius:6px; padding:3px 9px; margin:2px 4px 2px 0; font-size:12px; font-weight:600; color:var(--text);}
   .taxi-chip em{font-style:normal; color:var(--cyan); font-weight:500; margin-left:4px;}
 
+  .matchup-detail{margin-bottom:8px;}
+  .matchup-detail summary{cursor:pointer; list-style:none; display:flex; align-items:center; gap:10px; padding:12px 14px; font-size:13px;}
+  .matchup-detail summary::-webkit-details-marker{display:none;}
+  .matchup-detail summary::before{content:"▸"; color:var(--text-dim); font-size:11px; transition:transform 0.15s ease;}
+  .matchup-detail[open] summary::before{transform:rotate(90deg);}
+  .matchup-detail summary .team-name{flex:1;}
+  .matchup-detail summary .team-name:last-of-type{text-align:right;}
+  .matchup-detail table{border-top:1px solid var(--border);}
+
   /* ---- Bar chart ---- */
   .bar-row{display:grid; grid-template-columns:170px 1fr 70px; align-items:center; gap:10px; padding:9px 14px;}
   .bar-row:not(:last-child){border-bottom:1px solid var(--border);}
@@ -185,6 +194,24 @@ async function getPlayersMap(){
   return data;
 }
 
+function playerLabel(pid, playersMap){
+  if(pid == null || pid === '0') return {id:pid, name:'Empty', pos:'', nfl_team:''};
+  const p = playersMap[pid];
+  if(!p){
+    // Defense/special-teams entries use the team abbreviation as the "player_id" (e.g. "SEA")
+    if(typeof pid === 'string' && pid.length <= 3 && pid === pid.toUpperCase()){
+      return {id:pid, name:`${pid} D/ST`, pos:'DEF', nfl_team:pid};
+    }
+    return {id:pid, name:`Player ${pid}`, pos:'', nfl_team:''};
+  }
+  return {
+    id:pid,
+    name: p.full_name || `${p.first_name||''} ${p.last_name||''}`.trim() || pid,
+    pos: p.position || '',
+    nfl_team: p.team || 'FA'
+  };
+}
+
 // Sleeper rolls a league to a new league_id each season, linked backward via
 // previous_league_id. Given any league_id in the chain, walk backward until we
 // find the season the user actually wants.
@@ -249,28 +276,16 @@ async function loadLeague(){
     });
     const teamByRoster = {}; teams.forEach(t=>teamByRoster[t.roster_id]=t);
 
-    // Resolve taxi squad player names — Sleeper only exposes this via the full
-    // player database (~5MB), so fetch it once and cache in the browser for a day.
-    const anyTaxi = teams.some(t=>t.taxi.length>0);
-    if(anyTaxi){
-      let playersMap = {};
-      try{ playersMap = await getPlayersMap(); }catch(e){ console.error('Could not load player database:', e); }
-      teams.forEach(t=>{
-        t.taxiPlayers = t.taxi.map(pid=>{
-          const p = playersMap[pid];
-          if(!p) return {id:pid, name:`Player ${pid}`, pos:'', nfl_team:''};
-          return {
-            id:pid,
-            name: p.full_name || `${p.first_name||''} ${p.last_name||''}`.trim() || pid,
-            pos: p.position || '',
-            nfl_team: p.team || 'FA'
-          };
-        });
-        t.activeCount = Math.max(0, (t.players.length||0) - t.taxi.length - t.reserve.length);
-      });
-    } else {
-      teams.forEach(t=>{ t.taxiPlayers = []; t.activeCount = Math.max(0, (t.players.length||0) - t.reserve.length); });
-    }
+    // Player names (taxi squad + individual matchup scoring) require Sleeper's full
+    // player database (~5MB) since there's no per-ID lookup endpoint. Fetch once,
+    // cached in the browser for a day.
+    let playersMap = {};
+    try{ playersMap = await getPlayersMap(); }catch(e){ console.error('Could not load player database:', e); }
+
+    teams.forEach(t=>{
+      t.taxiPlayers = t.taxi.map(pid=>playerLabel(pid, playersMap));
+      t.activeCount = Math.max(0, (t.players.length||0) - t.taxi.length - t.reserve.length);
+    });
 
     // Determine regular season weeks to scan.
     // Prefer counting actual completed games from each roster's record — this works
@@ -311,7 +326,13 @@ async function loadLeague(){
         if(!team) return;
         if(!highScore || entry.points > highScore.pts) highScore = {pts:entry.points, team, week};
         if(!lowScore || entry.points < lowScore.pts) lowScore = {pts:entry.points, team, week};
-        (byMatchup[entry.matchup_id] = byMatchup[entry.matchup_id]||[]).push({roster_id:entry.roster_id, points:entry.points});
+        (byMatchup[entry.matchup_id] = byMatchup[entry.matchup_id]||[]).push({
+          roster_id: entry.roster_id,
+          points: entry.points,
+          starters: entry.starters || [],
+          starters_points: entry.starters_points || [],
+          players_points: entry.players_points || {}
+        });
       });
       Object.values(byMatchup).forEach(pair=>{
         if(pair.length!==2) return;
@@ -361,7 +382,7 @@ async function loadLeague(){
 
     const leagueAvgPPG = teams.reduce((s,t)=>s+t.fpts,0) / (teams.length * Math.max(weeksToScan,1)) || 0;
 
-    render({league, teams, standings, highScore, lowScore, closest, blowout, weeksToScan, weeklyRows, leagueAvgPPG});
+    render({league, teams, standings, highScore, lowScore, closest, blowout, weeksToScan, weeklyRows, leagueAvgPPG, playersMap});
 
   }catch(err){
     console.error('Sleeper dashboard error:', err);
@@ -371,7 +392,7 @@ async function loadLeague(){
   }
 }
 
-function render({league, teams, standings, highScore, lowScore, closest, blowout, weeksToScan, weeklyRows, leagueAvgPPG}){
+function render({league, teams, standings, highScore, lowScore, closest, blowout, weeksToScan, weeklyRows, leagueAvgPPG, playersMap}){
   document.getElementById('headerPlaceholder').style.display='none';
   document.getElementById('headerLeft').style.display='flex';
   document.getElementById('leagueAvatar').src = league.avatar ? `https://sleepercdn.com/avatars/${league.avatar}` : 'https://sleepercdn.com/images/v2/icons/player_default.webp';
@@ -462,30 +483,55 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
       <div class="bar-val">${t.tx} (${t.trades} trades)</div>
     </div>`).join('');
 
-  // Week-by-week matchups
+  // Week-by-week matchups — individual player scoring, not just team totals
   let matchupsHtml = '<div class="msg" style="padding:24px;">No matchup data available for this league yet.</div>';
   if(weeklyRows && weeklyRows.length){
+    const starterSlots = (league.roster_positions || []).filter(p => p !== 'BN');
     const byWeek = {};
     weeklyRows.forEach(row => (byWeek[row.week] = byWeek[row.week]||[]).push(row));
     const weeks = Object.keys(byWeek).map(Number).sort((a,b)=>a-b);
+
     matchupsHtml = weeks.map(wk => {
-      const rows = byWeek[wk].map(({a,b})=>{
+      const panels = byWeek[wk].map(({a,b})=>{
         const teamA = teams.find(t=>t.roster_id===a.roster_id);
         const teamB = teams.find(t=>t.roster_id===b.roster_id);
         const aWins = a.points > b.points, bWins = b.points > a.points;
+        const slotCount = Math.max(a.starters.length, b.starters.length, starterSlots.length);
+
+        let playerRows = '';
+        for(let i=0; i<slotCount; i++){
+          const slot = starterSlots[i] || '';
+          const pidA = a.starters[i], pidB = b.starters[i];
+          const infoA = pidA!=null ? playerLabel(pidA, playersMap) : {name:'—', pos:'', nfl_team:''};
+          const infoB = pidB!=null ? playerLabel(pidB, playersMap) : {name:'—', pos:'', nfl_team:''};
+          const ptsA = pidA!=null ? (a.players_points[pidA] ?? a.starters_points[i] ?? null) : null;
+          const ptsB = pidB!=null ? (b.players_points[pidB] ?? b.starters_points[i] ?? null) : null;
+          playerRows += `
+            <tr>
+              <td class="num mono" style="${ptsA!=null && ptsB!=null && ptsA>ptsB?'color:var(--green);':''}">${ptsA!=null?fmtPts(ptsA):'—'}</td>
+              <td>${infoA.name}${infoA.pos?` <span class="owner-name">${infoA.pos}${infoA.nfl_team?'/'+infoA.nfl_team:''}</span>`:''}</td>
+              <td class="num mono" style="color:var(--text-dim); width:40px; text-align:center;">${slot}</td>
+              <td>${infoB.name}${infoB.pos?` <span class="owner-name">${infoB.pos}${infoB.nfl_team?'/'+infoB.nfl_team:''}</span>`:''}</td>
+              <td class="num mono" style="${ptsA!=null && ptsB!=null && ptsB>ptsA?'color:var(--green);':''}">${ptsB!=null?fmtPts(ptsB):'—'}</td>
+            </tr>`;
+        }
+
         return `
-        <tr>
-          <td><div class="team-cell"><img class="team-avatar" src="${teamA?.avatar||''}" onerror="this.style.display='none'"><div class="team-name" style="${aWins?'color:var(--green);':''}">${teamA?.team_name||'—'}</div></div></td>
-          <td class="num mono" style="${aWins?'color:var(--green);font-weight:700;':''}">${fmtPts(a.points)}</td>
-          <td class="num mono" style="color:var(--text-dim); width:24px;">vs</td>
-          <td class="num mono" style="${bWins?'color:var(--green);font-weight:700;':''}">${fmtPts(b.points)}</td>
-          <td><div class="team-cell" style="justify-content:flex-end; text-align:right;"><div class="team-name" style="${bWins?'color:var(--green);':''}">${teamB?.team_name||'—'}</div><img class="team-avatar" src="${teamB?.avatar||''}" onerror="this.style.display='none'"></div></td>
-        </tr>`;
+          <details class="panel matchup-detail">
+            <summary>
+              <span class="team-name" style="${aWins?'color:var(--green);':''}">${teamA?.team_name||'—'}</span>
+              <span class="mono" style="${aWins?'color:var(--green);font-weight:700;':''}">${fmtPts(a.points)}</span>
+              <span style="color:var(--text-dim);">vs</span>
+              <span class="mono" style="${bWins?'color:var(--green);font-weight:700;':''}">${fmtPts(b.points)}</span>
+              <span class="team-name" style="${bWins?'color:var(--green);':''}">${teamB?.team_name||'—'}</span>
+            </summary>
+            <table><tbody>${playerRows}</tbody></table>
+          </details>`;
       }).join('');
       return `
-        <div class="panel" style="margin-bottom:12px;">
-          <div style="padding:10px 14px; border-bottom:1px solid var(--border); font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em; color:var(--gold); text-transform:uppercase;">Week ${wk}</div>
-          <table><tbody>${rows}</tbody></table>
+        <div style="margin-bottom:20px;">
+          <div style="font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em; color:var(--gold); text-transform:uppercase; margin-bottom:8px;">Week ${wk}</div>
+          ${panels}
         </div>`;
     }).join('');
   }
