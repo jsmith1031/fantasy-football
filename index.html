@@ -6,6 +6,7 @@
 <title>Shane's FF Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg:#0B1120;
@@ -55,6 +56,9 @@
   .controls button{background:var(--gold); color:#171208; border:none; padding:10px 16px; border-radius:8px; font-weight:700; font-size:12.5px; letter-spacing:0.03em; cursor:pointer; font-family:'Inter',sans-serif; text-transform:uppercase;}
   .controls button:hover{background:#ffc451;}
   .controls button:disabled{background:var(--border); color:var(--text-dim); cursor:default;}
+  .controls button.btn-secondary{background:transparent; border:1px solid var(--border-bright); color:var(--text);}
+  .controls button.btn-secondary:hover{border-color:var(--cyan); color:var(--cyan); background:transparent;}
+  .controls button.btn-secondary:disabled{border-color:var(--border); color:var(--text-dim);}
 
   .wrap{max-width:1180px; margin:0 auto; padding:8px 24px 80px;}
 
@@ -156,6 +160,7 @@
     <input id="leagueIdInput" class="mono" placeholder="League ID" value="1317218659407495168">
     <input id="seasonInput" class="mono" placeholder="Season" value="2025" style="width:80px;">
     <button id="loadBtn" onclick="loadLeague()">Load League</button>
+    <button id="exportBtn" class="btn-secondary" onclick="exportToExcel()" disabled>Export Excel</button>
   </div>
 </div>
 
@@ -167,6 +172,7 @@
 
 <script>
 const API = "https://api.sleeper.app/v1";
+let lastLoadedData = null; // populated after each successful load; used by exportToExcel()
 // Optional: override the displayed league name (leave as "" to always show the live Sleeper league name)
 const DISPLAY_NAME_OVERRIDE = "Shane's FF Tracker";
 const contentEl = document.getElementById('content');
@@ -219,6 +225,103 @@ function playerLabel(pid, playersMap){
   };
 }
 
+// ---- Excel export ----------------------------------------------------
+
+function buildStandingsExportRows(standings){
+  return standings.map((t,i)=>({
+    Rank: i+1,
+    Team: t.team_name,
+    Owner: t.owner_name,
+    Wins: t.wins, Losses: t.losses, Ties: t.ties,
+    'Points For': Number(fmtPts(t.fpts)),
+    'Points Against': Number(fmtPts(t.fpts_against)),
+    Diff: Number(fmtPts(t.fpts - t.fpts_against)),
+    Streak: t.streak,
+    'Roster Moves': t.moves,
+    Trades: t.trades,
+    'Waiver Budget Used': t.waiver_budget_used
+  }));
+}
+
+function buildWeeklyTeamScoreRows(weeklyRows, teams){
+  const rows = [];
+  (weeklyRows||[]).forEach(({week,a,b})=>{
+    const teamA = teams.find(t=>t.roster_id===a.roster_id);
+    const teamB = teams.find(t=>t.roster_id===b.roster_id);
+    rows.push({Week:week, Team:teamA?.team_name||'', Points:Number(fmtPts(a.points)), Opponent:teamB?.team_name||'', 'Opponent Points':Number(fmtPts(b.points)), Result: a.points>b.points?'W':(a.points<b.points?'L':'T')});
+    rows.push({Week:week, Team:teamB?.team_name||'', Points:Number(fmtPts(b.points)), Opponent:teamA?.team_name||'', 'Opponent Points':Number(fmtPts(a.points)), Result: b.points>a.points?'W':(b.points<a.points?'L':'T')});
+  });
+  return rows.sort((x,y)=> x.Week-y.Week || x.Team.localeCompare(y.Team));
+}
+
+function buildPlayerWeeklyExportRows(weeklyRows, teams, league, playersMap){
+  const starterSlots = (league.roster_positions || []).filter(p => p !== 'BN');
+  const rows = [];
+  (weeklyRows||[]).forEach(({week, a, b})=>{
+    [[a,b],[b,a]].forEach(([side, opp])=>{
+      const team = teams.find(t=>t.roster_id===side.roster_id);
+      const oppTeam = teams.find(t=>t.roster_id===opp.roster_id);
+      side.starters.forEach((pid,i)=>{
+        const info = playerLabel(pid, playersMap);
+        const pts = side.players_points[pid] ?? side.starters_points[i] ?? null;
+        rows.push({Week:week, Team:team?.team_name||'', Opponent:oppTeam?.team_name||'', Player:info.name, Position:info.pos, 'NFL Team':info.nfl_team, Slot:starterSlots[i]||'', Starter:'Yes', Points: pts!=null?Number(fmtPts(pts)):''});
+      });
+      (side.players||[]).filter(pid=>!side.starters.includes(pid)).forEach(pid=>{
+        const info = playerLabel(pid, playersMap);
+        const pts = side.players_points[pid] ?? null;
+        rows.push({Week:week, Team:team?.team_name||'', Opponent:oppTeam?.team_name||'', Player:info.name, Position:info.pos, 'NFL Team':info.nfl_team, Slot:'BN', Starter:'No', Points: pts!=null?Number(fmtPts(pts)):''});
+      });
+    });
+  });
+  return rows;
+}
+
+function buildTaxiExportRows(teams){
+  const rows = [];
+  teams.forEach(t=>{
+    if(!t.taxiPlayers || !t.taxiPlayers.length){
+      rows.push({Team:t.team_name, Player:'(none)', Position:'', 'NFL Team':''});
+    } else {
+      t.taxiPlayers.forEach(p=> rows.push({Team:t.team_name, Player:p.name, Position:p.pos, 'NFL Team':p.nfl_team}));
+    }
+  });
+  return rows;
+}
+
+function buildTransactionExportRows(txResults, teams){
+  const rows = [];
+  (txResults||[]).forEach(({week,data})=>{
+    (data||[]).forEach(tx=>{
+      if(tx.status !== 'complete') return;
+      const teamNames = (tx.roster_ids||[]).map(rid=>teams.find(t=>t.roster_id===rid)?.team_name || rid).join('; ');
+      rows.push({
+        Week: week,
+        Type: tx.type,
+        'Teams Involved': teamNames,
+        Adds: Object.keys(tx.adds||{}).join('; '),
+        Drops: Object.keys(tx.drops||{}).join('; '),
+        'Waiver Bid': (tx.settings && tx.settings.waiver_bid != null) ? tx.settings.waiver_bid : ''
+      });
+    });
+  });
+  return rows.sort((x,y)=> x.Week-y.Week);
+}
+
+function exportToExcel(){
+  if(!lastLoadedData || typeof XLSX === 'undefined') return;
+  const {league, teams, standings, weeklyRows, txResults, playersMap} = lastLoadedData;
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildStandingsExportRows(standings)), 'Standings');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildWeeklyTeamScoreRows(weeklyRows, teams)), 'Weekly Team Scores');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildPlayerWeeklyExportRows(weeklyRows, teams, league, playersMap)), 'Weekly Player Detail');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildTaxiExportRows(teams)), 'Taxi Squad');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(buildTransactionExportRows(txResults, teams)), 'Transactions');
+
+  const safeName = (DISPLAY_NAME_OVERRIDE || league.name || 'league').replace(/[^a-z0-9]+/gi, '_');
+  XLSX.writeFile(wb, `${safeName}_${league.season}.xlsx`);
+}
+
 // Sleeper rolls a league to a new league_id each season, linked backward via
 // previous_league_id. Given any league_id in the chain, walk backward until we
 // find the season the user actually wants.
@@ -239,6 +342,7 @@ async function loadLeague(){
   const btn = document.getElementById('loadBtn');
   if(!leagueIdRaw){ return; }
   btn.disabled = true;
+  document.getElementById('exportBtn').disabled = true;
   document.getElementById('tickerWrap').style.display = 'none';
   contentEl.innerHTML = `<div class="msg"><span class="spinner"></span>&nbsp;&nbsp;Pulling league data from Sleeper…</div>`;
 
@@ -389,6 +493,9 @@ async function loadLeague(){
     standings.sort((x,y)=> y.wins - x.wins || y.fpts - x.fpts);
 
     const leagueAvgPPG = teams.reduce((s,t)=>s+t.fpts,0) / (teams.length * Math.max(weeksToScan,1)) || 0;
+
+    lastLoadedData = {league, teams, standings, weeklyRows, txResults, playersMap};
+    document.getElementById('exportBtn').disabled = false;
 
     render({league, teams, standings, highScore, lowScore, closest, blowout, weeksToScan, weeklyRows, leagueAvgPPG, playersMap});
 
