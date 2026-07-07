@@ -95,6 +95,9 @@
   .streak-w{color:var(--green); font-weight:700;}
   .streak-l{color:var(--red); font-weight:700;}
 
+  .taxi-chip{display:inline-block; background:var(--bg-panel-2); border:1px solid var(--border); border-radius:6px; padding:3px 9px; margin:2px 4px 2px 0; font-size:12px; font-weight:600; color:var(--text);}
+  .taxi-chip em{font-style:normal; color:var(--cyan); font-weight:500; margin-left:4px;}
+
   /* ---- Bar chart ---- */
   .bar-row{display:grid; grid-template-columns:170px 1fr 70px; align-items:center; gap:10px; padding:9px 14px;}
   .bar-row:not(:last-child){border-bottom:1px solid var(--border);}
@@ -165,6 +168,23 @@ function avatarUrl(avatarId, fallback){
 
 function fmtPts(n){ return (Math.round(n*100)/100).toFixed(2); }
 
+async function getPlayersMap(){
+  const cacheKey = 'sleeper_players_cache_v1';
+  try{
+    const cachedRaw = localStorage.getItem(cacheKey);
+    if(cachedRaw){
+      const cached = JSON.parse(cachedRaw);
+      if(Date.now() - cached.ts < 24*60*60*1000){
+        return cached.data;
+      }
+    }
+  }catch(e){ /* storage unavailable or corrupt — fall through to a fresh fetch */ }
+  const data = await getJSON(`${API}/players/nfl`);
+  try{ localStorage.setItem(cacheKey, JSON.stringify({ts:Date.now(), data})); }
+  catch(e){ /* likely over quota (~5MB payload) — fine, we just won't cache it */ }
+  return data;
+}
+
 // Sleeper rolls a league to a new league_id each season, linked backward via
 // previous_league_id. Given any league_id in the chain, walk backward until we
 // find the season the user actually wants.
@@ -221,10 +241,36 @@ async function loadLeague(){
         ppts: (s.ppts||0) + (s.ppts_decimal||0)/100,
         moves: s.total_moves||0,
         waiver_budget_used: s.waiver_budget_used||0,
-        streak_arr: []
+        streak_arr: [],
+        taxi: r.taxi || [],
+        reserve: r.reserve || [],
+        players: r.players || []
       };
     });
     const teamByRoster = {}; teams.forEach(t=>teamByRoster[t.roster_id]=t);
+
+    // Resolve taxi squad player names — Sleeper only exposes this via the full
+    // player database (~5MB), so fetch it once and cache in the browser for a day.
+    const anyTaxi = teams.some(t=>t.taxi.length>0);
+    if(anyTaxi){
+      let playersMap = {};
+      try{ playersMap = await getPlayersMap(); }catch(e){ console.error('Could not load player database:', e); }
+      teams.forEach(t=>{
+        t.taxiPlayers = t.taxi.map(pid=>{
+          const p = playersMap[pid];
+          if(!p) return {id:pid, name:`Player ${pid}`, pos:'', nfl_team:''};
+          return {
+            id:pid,
+            name: p.full_name || `${p.first_name||''} ${p.last_name||''}`.trim() || pid,
+            pos: p.position || '',
+            nfl_team: p.team || 'FA'
+          };
+        });
+        t.activeCount = Math.max(0, (t.players.length||0) - t.taxi.length - t.reserve.length);
+      });
+    } else {
+      teams.forEach(t=>{ t.taxiPlayers = []; t.activeCount = Math.max(0, (t.players.length||0) - t.reserve.length); });
+    }
 
     // Determine regular season weeks to scan.
     // Prefer counting actual completed games from each roster's record — this works
@@ -352,8 +398,10 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
   document.getElementById('ticker').innerHTML = tickerHtml + tickerHtml;
   document.getElementById('tickerWrap').style.display = 'block';
 
+  const totalTaxi = teams.reduce((s,t)=>s + (t.taxi?t.taxi.length:0), 0);
   const kpis = [
     {label:'League Leader', value: leader.team_name, sub:`${leader.wins}-${leader.losses}${leader.ties?'-'+leader.ties:''} · ${fmtPts(leader.fpts)} PF`},
+    {label:'Taxi Squad Players', value: totalTaxi, sub:`across ${teams.filter(t=>t.taxi&&t.taxi.length>0).length} of ${teams.length} teams`},
   ];
 
   if(hasScoreData){
@@ -442,6 +490,19 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
     }).join('');
   }
 
+  // Taxi squad breakdown
+  const taxiRows = [...teams].sort((a,b)=> (b.taxi?.length||0) - (a.taxi?.length||0)).map(t=>{
+    const players = t.taxiPlayers && t.taxiPlayers.length
+      ? t.taxiPlayers.map(p=>`<span class="taxi-chip">${p.name}${p.pos?` <em>${p.pos}${p.nfl_team?'/'+p.nfl_team:''}</em>`:''}</span>`).join('')
+      : `<span class="owner-name">— none —</span>`;
+    return `
+    <tr>
+      <td><div class="team-cell"><img class="team-avatar" src="${t.avatar}" onerror="this.style.display='none'"><div class="team-name">${t.team_name}</div></div></td>
+      <td class="num mono">${t.taxi?t.taxi.length:0}</td>
+      <td>${players}</td>
+    </tr>`;
+  }).join('');
+
   contentEl.innerHTML = `
     <div class="kpi-grid">${kpiHtml}</div>
 
@@ -451,6 +512,16 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
         <table>
           <thead><tr><th>#</th><th>Team</th><th class="num">Record</th><th class="num">PF</th><th class="num">PA</th><th class="num">Diff</th><th class="num">Streak</th></tr></thead>
           <tbody>${standingsRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head"><h2>Taxi Squad</h2><div class="rule"></div><span class="tag">${totalTaxi} TOTAL</span></div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Team</th><th class="num">On Taxi</th><th>Players</th></tr></thead>
+          <tbody>${taxiRows}</tbody>
         </table>
       </div>
     </div>
