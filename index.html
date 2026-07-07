@@ -204,12 +204,19 @@ async function loadLeague(){
     });
     const teamByRoster = {}; teams.forEach(t=>teamByRoster[t.roster_id]=t);
 
-    // Determine regular season weeks to scan
+    // Determine regular season weeks to scan.
+    // Prefer counting actual completed games from each roster's record — this works
+    // correctly for past seasons regardless of what the *live* NFL week currently is.
     const playoffStart = (league.settings && league.settings.playoff_week_start) || 15;
     const season = league.season;
+    const gamesPlayed = Math.max(0, ...rosters.map(r=>{
+      const s = r.settings || {};
+      return (s.wins||0) + (s.losses||0) + (s.ties||0);
+    }));
     const isCurrentSeason = nflState.season === season;
-    const lastWeek = isCurrentSeason ? Math.max(1, (nflState.week||1) - (nflState.season_type==='regular'?0:0)) : (playoffStart-1);
-    const weeksToScan = Math.max(1, Math.min(lastWeek, playoffStart-1, 18));
+    const liveWeekEstimate = isCurrentSeason ? Math.max(1, (nflState.week||1) - 1) : (playoffStart-1);
+    const bestGuess = gamesPlayed > 0 ? gamesPlayed : liveWeekEstimate;
+    const weeksToScan = Math.max(1, Math.min(bestGuess, playoffStart-1, 18));
 
     // Pull matchups + transactions in parallel per week
     const weekPromises = [];
@@ -223,8 +230,8 @@ async function loadLeague(){
     const [weekResults, txResults] = await Promise.all([Promise.all(weekPromises), Promise.all(txPromises)]);
 
     // Aggregate weekly stats
-    let highScore = {pts:-1}, lowScore = {pts:1e9};
-    let closest = {margin:1e9}, blowout = {margin:-1};
+    let highScore = null, lowScore = null;
+    let closest = null, blowout = null;
     const weeklyRows = [];
 
     weekResults.sort((a,b)=>a.week-b.week).forEach(({week,data})=>{
@@ -234,8 +241,8 @@ async function loadLeague(){
         if(entry.points == null) return;
         const team = teamByRoster[entry.roster_id];
         if(!team) return;
-        if(entry.points > highScore.pts) highScore = {pts:entry.points, team, week};
-        if(entry.points < lowScore.pts) lowScore = {pts:entry.points, team, week};
+        if(!highScore || entry.points > highScore.pts) highScore = {pts:entry.points, team, week};
+        if(!lowScore || entry.points < lowScore.pts) lowScore = {pts:entry.points, team, week};
         (byMatchup[entry.matchup_id] = byMatchup[entry.matchup_id]||[]).push({roster_id:entry.roster_id, points:entry.points});
       });
       Object.values(byMatchup).forEach(pair=>{
@@ -244,8 +251,8 @@ async function loadLeague(){
         const margin = Math.abs(a.points - b.points);
         const winnerRoster = a.points >= b.points ? a.roster_id : b.roster_id;
         const loserRoster = a.points >= b.points ? b.roster_id : a.roster_id;
-        if(margin < closest.margin) closest = {margin, a, b, week};
-        if(margin > blowout.margin) blowout = {margin, a, b, week};
+        if(!closest || margin < closest.margin) closest = {margin, a, b, week};
+        if(!blowout || margin > blowout.margin) blowout = {margin, a, b, week};
         if(teamByRoster[winnerRoster]) teamByRoster[winnerRoster].streak_arr.push({week, result:'W'});
         if(teamByRoster[loserRoster]) teamByRoster[loserRoster].streak_arr.push({week, result:'L'});
         weeklyRows.push({week, a, b});
@@ -289,6 +296,7 @@ async function loadLeague(){
     render({league, teams, standings, highScore, lowScore, closest, blowout, weeksToScan, weeklyRows, leagueAvgPPG});
 
   }catch(err){
+    console.error('Sleeper dashboard error:', err);
     contentEl.innerHTML = `<div class="msg error">Couldn't load that league — ${err.message}. Double-check the League ID and try again.</div>`;
   }finally{
     btn.disabled = false;
@@ -302,35 +310,48 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
   document.getElementById('leagueName').textContent = DISPLAY_NAME_OVERRIDE || league.name;
   document.getElementById('leagueSub').textContent = `${league.season} SEASON · ${league.total_rosters} TEAMS · ${(league.status||'').toUpperCase()}`;
 
-  // Ticker
   const leader = standings[0];
+  const hasScoreData = !!(highScore && lowScore && closest && blowout);
+
+  // Ticker
   const tickerBits = [
     `LEAGUE: ${DISPLAY_NAME_OVERRIDE || league.name}`,
     `LEADER: <b>${leader.team_name}</b> (${leader.wins}-${leader.losses}${leader.ties?'-'+leader.ties:''})`,
-    `HIGH SCORE: <b>${highScore.team.team_name} — ${fmtPts(highScore.pts)}</b> (WK ${highScore.week})`,
-    `BIGGEST BLOWOUT: WK ${blowout.week} — margin ${fmtPts(blowout.margin)}`,
-    `CLOSEST GAME: WK ${closest.week} — margin ${fmtPts(closest.margin)}`,
-    `WEEKS TRACKED: ${weeksToScan}`
   ];
+  if(hasScoreData){
+    tickerBits.push(
+      `HIGH SCORE: <b>${highScore.team.team_name} — ${fmtPts(highScore.pts)}</b> (WK ${highScore.week})`,
+      `BIGGEST BLOWOUT: WK ${blowout.week} — margin ${fmtPts(blowout.margin)}`,
+      `CLOSEST GAME: WK ${closest.week} — margin ${fmtPts(closest.margin)}`,
+    );
+  }
+  tickerBits.push(`WEEKS TRACKED: ${weeksToScan}`);
   const tickerHtml = tickerBits.map(b=>`<span>${b}</span>`).join('');
   document.getElementById('ticker').innerHTML = tickerHtml + tickerHtml;
   document.getElementById('tickerWrap').style.display = 'block';
 
-  const closestTeamA = teams.find(t=>t.roster_id===closest.a.roster_id);
-  const closestTeamB = teams.find(t=>t.roster_id===closest.b.roster_id);
-  const blowoutWinner = blowout.a.points>=blowout.b.points ? blowout.a : blowout.b;
-  const blowoutLoser  = blowout.a.points>=blowout.b.points ? blowout.b : blowout.a;
-  const blowoutWinnerTeam = teams.find(t=>t.roster_id===blowoutWinner.roster_id);
-  const blowoutLoserTeam = teams.find(t=>t.roster_id===blowoutLoser.roster_id);
-
   const kpis = [
     {label:'League Leader', value: leader.team_name, sub:`${leader.wins}-${leader.losses}${leader.ties?'-'+leader.ties:''} · ${fmtPts(leader.fpts)} PF`},
-    {label:'Highest Single Week', value: fmtPts(highScore.pts), sub:`${highScore.team.team_name} · Wk ${highScore.week}`},
-    {label:'Lowest Single Week', value: fmtPts(lowScore.pts), sub:`${lowScore.team.team_name} · Wk ${lowScore.week}`},
-    {label:'Closest Matchup', value: fmtPts(closest.margin)+' pts', sub:`${closestTeamA?.team_name} vs ${closestTeamB?.team_name} · Wk ${closest.week}`},
-    {label:'Biggest Blowout', value: fmtPts(blowout.margin)+' pts', sub:`${blowoutWinnerTeam?.team_name} over ${blowoutLoserTeam?.team_name} · Wk ${blowout.week}`},
-    {label:'League Avg PPG', value: fmtPts(leagueAvgPPG), sub:`across ${weeksToScan} weeks tracked`},
   ];
+
+  if(hasScoreData){
+    const closestTeamA = teams.find(t=>t.roster_id===closest.a.roster_id);
+    const closestTeamB = teams.find(t=>t.roster_id===closest.b.roster_id);
+    const blowoutWinner = blowout.a.points>=blowout.b.points ? blowout.a : blowout.b;
+    const blowoutLoser  = blowout.a.points>=blowout.b.points ? blowout.b : blowout.a;
+    const blowoutWinnerTeam = teams.find(t=>t.roster_id===blowoutWinner.roster_id);
+    const blowoutLoserTeam = teams.find(t=>t.roster_id===blowoutLoser.roster_id);
+
+    kpis.push(
+      {label:'Highest Single Week', value: fmtPts(highScore.pts), sub:`${highScore.team.team_name} · Wk ${highScore.week}`},
+      {label:'Lowest Single Week', value: fmtPts(lowScore.pts), sub:`${lowScore.team.team_name} · Wk ${lowScore.week}`},
+      {label:'Closest Matchup', value: fmtPts(closest.margin)+' pts', sub:`${closestTeamA?.team_name||'—'} vs ${closestTeamB?.team_name||'—'} · Wk ${closest.week}`},
+      {label:'Biggest Blowout', value: fmtPts(blowout.margin)+' pts', sub:`${blowoutWinnerTeam?.team_name||'—'} over ${blowoutLoserTeam?.team_name||'—'} · Wk ${blowout.week}`},
+      {label:'League Avg PPG', value: fmtPts(leagueAvgPPG), sub:`across ${weeksToScan} weeks tracked`},
+    );
+  } else {
+    kpis.push({label:'Weekly Scoring', value:'No data yet', sub:'This league has no completed matchups to analyze'});
+  }
 
   const kpiHtml = kpis.map(k=>`
     <div class="kpi">
