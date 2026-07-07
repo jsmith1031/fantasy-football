@@ -325,7 +325,7 @@ async function loadLeague(){
   }
 }
 
-function render({league, teams, standings, highScore, lowScore, closest, blowout, weeksToScan, leagueAvgPPG}){
+function render({league, teams, standings, highScore, lowScore, closest, blowout, weeksToScan, weeklyRows, leagueAvgPPG}){
   document.getElementById('headerPlaceholder').style.display='none';
   document.getElementById('headerLeft').style.display='flex';
   document.getElementById('leagueAvatar').src = league.avatar ? `https://sleepercdn.com/avatars/${league.avatar}` : 'https://sleepercdn.com/images/v2/icons/player_default.webp';
@@ -414,6 +414,34 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
       <div class="bar-val">${t.tx} (${t.trades} trades)</div>
     </div>`).join('');
 
+  // Week-by-week matchups
+  let matchupsHtml = '<div class="msg" style="padding:24px;">No matchup data available for this league yet.</div>';
+  if(weeklyRows && weeklyRows.length){
+    const byWeek = {};
+    weeklyRows.forEach(row => (byWeek[row.week] = byWeek[row.week]||[]).push(row));
+    const weeks = Object.keys(byWeek).map(Number).sort((a,b)=>a-b);
+    matchupsHtml = weeks.map(wk => {
+      const rows = byWeek[wk].map(({a,b})=>{
+        const teamA = teams.find(t=>t.roster_id===a.roster_id);
+        const teamB = teams.find(t=>t.roster_id===b.roster_id);
+        const aWins = a.points > b.points, bWins = b.points > a.points;
+        return `
+        <tr>
+          <td><div class="team-cell"><img class="team-avatar" src="${teamA?.avatar||''}" onerror="this.style.display='none'"><div class="team-name" style="${aWins?'color:var(--green);':''}">${teamA?.team_name||'—'}</div></div></td>
+          <td class="num mono" style="${aWins?'color:var(--green);font-weight:700;':''}">${fmtPts(a.points)}</td>
+          <td class="num mono" style="color:var(--text-dim); width:24px;">vs</td>
+          <td class="num mono" style="${bWins?'color:var(--green);font-weight:700;':''}">${fmtPts(b.points)}</td>
+          <td><div class="team-cell" style="justify-content:flex-end; text-align:right;"><div class="team-name" style="${bWins?'color:var(--green);':''}">${teamB?.team_name||'—'}</div><img class="team-avatar" src="${teamB?.avatar||''}" onerror="this.style.display='none'"></div></td>
+        </tr>`;
+      }).join('');
+      return `
+        <div class="panel" style="margin-bottom:12px;">
+          <div style="padding:10px 14px; border-bottom:1px solid var(--border); font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.06em; color:var(--gold); text-transform:uppercase;">Week ${wk}</div>
+          <table><tbody>${rows}</tbody></table>
+        </div>`;
+    }).join('');
+  }
+
   contentEl.innerHTML = `
     <div class="kpi-grid">${kpiHtml}</div>
 
@@ -436,6 +464,11 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
         <div class="section-head"><h2>Roster Activity</h2><div class="rule"></div></div>
         <div class="panel">${txHtml}</div>
       </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head"><h2>Week-by-Week Matchups</h2><div class="rule"></div><span class="tag">${weeksToScan} WEEKS</span></div>
+      ${matchupsHtml}
     </div>
   `;
 }
