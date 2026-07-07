@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sleeper League Dashboard</title>
+<title>Shane's FF Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -147,6 +147,8 @@
 
 <script>
 const API = "https://api.sleeper.app/v1";
+// Optional: override the displayed league name (leave as "" to always show the live Sleeper league name)
+const DISPLAY_NAME_OVERRIDE = "Shane's FF Tracker";
 const contentEl = document.getElementById('content');
 
 async function getJSON(url){
@@ -297,13 +299,13 @@ function render({league, teams, standings, highScore, lowScore, closest, blowout
   document.getElementById('headerPlaceholder').style.display='none';
   document.getElementById('headerLeft').style.display='flex';
   document.getElementById('leagueAvatar').src = league.avatar ? `https://sleepercdn.com/avatars/${league.avatar}` : 'https://sleepercdn.com/images/v2/icons/player_default.webp';
-  document.getElementById('leagueName').textContent = league.name;
+  document.getElementById('leagueName').textContent = DISPLAY_NAME_OVERRIDE || league.name;
   document.getElementById('leagueSub').textContent = `${league.season} SEASON · ${league.total_rosters} TEAMS · ${(league.status||'').toUpperCase()}`;
 
   // Ticker
   const leader = standings[0];
   const tickerBits = [
-    `LEAGUE: ${league.name}`,
+    `LEAGUE: ${DISPLAY_NAME_OVERRIDE || league.name}`,
     `LEADER: <b>${leader.team_name}</b> (${leader.wins}-${leader.losses}${leader.ties?'-'+leader.ties:''})`,
     `HIGH SCORE: <b>${highScore.team.team_name} — ${fmtPts(highScore.pts)}</b> (WK ${highScore.week})`,
     `BIGGEST BLOWOUT: WK ${blowout.week} — margin ${fmtPts(blowout.margin)}`,
